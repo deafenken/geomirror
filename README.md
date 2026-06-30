@@ -1,114 +1,189 @@
 # GeoMirror
 
-> Make your browser's HTML5 location match your visible IP — automatically, on every page.
+> Make your browser profile match your visible IP: geolocation, timezone, language, and `Accept-Language` — automatically, on every page.
 
-When you browse through a proxy or VPN, websites see your **exit IP** in one
-country while `navigator.geolocation` (powered by macOS/Windows location services
-and Wi-Fi scanning) still reports your **real physical location**. That mismatch
-is one of the most common ways sites detect that you're behind a proxy.
+GeoMirror is a Chrome Manifest V3 extension for people who use proxies, VPNs, remote desktops, or regional network exits and want the browser-visible environment to be internally consistent.
 
-GeoMirror fixes it. It detects where your **exit IP** is, picks a real residential
-street nearby, and feeds that coordinate to `navigator.geolocation` — so the
-location your browser reports always matches the IP that websites see. It updates
-itself when your proxy node changes, requires no account, and is fully auditable.
-
-[中文说明](./README.zh-CN.md) · [Privacy policy](./PRIVACY.md)
+[中文说明](./README.zh-CN.md) · [Privacy policy](./PRIVACY.md) · [Technical notes](./docs/TECHNICAL.md)
 
 ---
+
+## Motivation: IP alone is not enough
+
+Recent Claude / Anthropic account-ban controversies made one thing very clear: location-based risk controls can become brutal when they are applied mechanically. Many users reported that simply changing IPs, traveling, using VPNs, or having inconsistent regional signals could trigger account restrictions or bans. When a company such as Anthropic turns coarse address/location heuristics into account loss, the result is infuriating — but anger does not solve the operational problem.
+
+The practical problem is this:
+
+Most people only change their **IP address**. Their browser still exposes signals from somewhere else:
+
+- `navigator.geolocation` may reveal the real physical location.
+- `Date.prototype.getTimezoneOffset()` may reveal the local machine timezone.
+- `Intl.DateTimeFormat().resolvedOptions().timeZone` may reveal the system timezone.
+- `navigator.language` / `navigator.languages` may reveal the host language.
+- the HTTP `Accept-Language` header may reveal another locale.
+
+That mismatch is exactly the kind of thing automated risk systems can use as a proxy/VPN/fraud signal. GeoMirror exists to close that gap.
+
+## What GeoMirror does
+
+GeoMirror detects your visible **exit IP**, derives a plausible browser profile from that IP, and applies it locally inside Chrome:
+
+| Surface | What GeoMirror changes |
+| --- | --- |
+| HTML5 geolocation | Spoofs `navigator.geolocation` to a residential-looking coordinate near the exit IP. |
+| Geolocation permission | Reports geolocation permission as `granted` to avoid permission-state mismatch. |
+| Timezone offset | Spoofs `Date.prototype.getTimezoneOffset()` with DST-aware IANA timezone logic. |
+| Intl timezone | Spoofs default `Intl.DateTimeFormat` timezone and `resolvedOptions().timeZone`. |
+| Browser language | Spoofs `navigator.language` and `navigator.languages`. |
+| Intl locale | Spoofs default locale for `Intl.DateTimeFormat`, `Intl.NumberFormat`, and `Intl.Collator`. |
+| Request language | Sets outgoing `Accept-Language` via Chrome `declarativeNetRequest`. |
+
+The goal is simple: if your IP looks like Tokyo, the browser should not still look like Shanghai, Los Angeles, or Berlin.
+
+## Privacy model
+
+GeoMirror is local-first and auditable:
+
+- No account.
+- No telemetry.
+- No analytics.
+- No page-content reading.
+- No remote configuration.
+- Computed overrides and settings are stored in `chrome.storage.local`.
+
+Important accuracy note: GeoMirror is not a zero-network extension. To match your current exit IP automatically, it must call explicitly listed public IP/geolocation/map APIs through Chrome’s network stack. These requests are limited to:
+
+- detecting the exit IP location,
+- finding nearby residential roads,
+- reverse-geocoding a display address for the popup.
+
+It does not upload page content or browsing history. See [PRIVACY.md](./PRIVACY.md) and [docs/TECHNICAL.md](./docs/TECHNICAL.md) for the exact data flow.
 
 ## How it works
 
 ```
-   your proxy/VPN              Chrome
-        │                         │
-        ▼                         ▼
-  exit IP (e.g. LA) ──► GeoMirror background worker
-                          │
-            ┌─────────────┼──────────────┐
-            ▼             ▼              ▼
-      IP geolocation  Overpass API   BigDataCloud
-      (exit location) (residential    (display address)
-            │         roads nearby)         │
-            └────► pick a point on a ◄──────┘
-                   residential street
-                          │
-                          ▼
-            stored override coordinate
-                          │
-        content script injects into navigator.geolocation
-                          │
-                          ▼
-        page sees: LA residential street, matching your IP
+   proxy / VPN / remote exit          Chrome + GeoMirror
+              │                              │
+              ▼                              ▼
+        visible exit IP ───────► background service worker
+                                      │
+                 ┌────────────────────┼────────────────────┐
+                 ▼                    ▼                    ▼
+          IP geolocation      residential roads      reverse geocode
+          + timezone          near exit IP            for popup display
+                 │                    │                    │
+                 └──────────────► computed override ◄──────┘
+                                      │
+                         stored in chrome.storage.local
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    ▼                                   ▼
+          isolated-world bridge              MAIN-world injector
+          reads extension storage            patches page-visible APIs
+                    │                                   │
+                    └────────────► page sees a coherent browser profile
 ```
 
-1. **Detect the exit IP's location.** The background worker queries a chain of
-   free HTTPS geolocation services (with fallback), going through Chrome's
-   network stack — so it sees the same IP websites see.
-2. **Pick a residential street nearby.** It queries OpenStreetMap's Overpass API
-   for `highway=residential` ways within ~2.5 km of the exit location and samples
-   a point on a random one. This avoids landing on parks, POIs, or city centers.
-3. **Override `navigator.geolocation`.** A content script running in the page's
-   main world (at `document_start`, before page scripts) replaces
-   `navigator.geolocation` so every site gets the chosen coordinate. It also
-   reports the geolocation permission as `granted`.
-4. **Stay in sync.** It refreshes on a schedule (default 6h), on browser launch,
-   and on demand, so the reported location tracks your current exit IP.
+Technical sequence:
+
+1. `background.js` detects the visible exit IP using multiple providers.
+2. `lib/providers.js` normalizes IP geolocation data and preserves provider timezone fields such as `Asia/Tokyo`.
+3. `lib/geo.js` chooses a nearby residential-looking coordinate using OpenStreetMap / Overpass.
+4. `lib/locale.js` infers a plausible locale bundle from country code + timezone.
+5. `background.js` stores the override locally and installs a dynamic `Accept-Language` header rule.
+6. `content-bridge.js` runs in Chrome’s isolated extension world, reads local storage, and publishes the payload into a DOM attribute.
+7. `content-inject.js` runs in the page’s MAIN world at `document_start` and patches the browser APIs before page scripts run.
 
 ## Install
 
-### Option A — load unpacked (recommended for now)
+### Option A — load unpacked
 
 1. Download or clone this repository.
-2. (Optional) Generate icons: `python3 tools/gen-icons.py`. Prebuilt icons are
-   included, so you can skip this unless you changed the design.
-3. Open `chrome://extensions`, enable **Developer mode** (top-right).
-4. Click **Load unpacked** and select the `geomirror` folder.
-5. Pin GeoMirror and open its popup to confirm it shows your exit IP and a
-   matching reported location.
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the `geomirror` folder.
+6. Pin GeoMirror and click **Refresh** in the popup.
 
 ### Option B — Chrome Web Store
 
-A store listing is planned once the project is reviewed. Until then, use Option A.
+A store listing is planned. Until then, use the unpacked extension.
 
 ## Verify it works
 
-Open [`https://browserleaks.com/geo`](https://browserleaks.com/geo) with GeoMirror
-on. The **HTML5 geolocation** result and the **IP-based** result should both point
-to the same city (your exit IP's city), and the HTML5 result should land on a
-residential street rather than a landmark.
+Open a fingerprint/location test page and check these values:
+
+```js
+navigator.language
+navigator.languages
+Intl.DateTimeFormat().resolvedOptions()
+new Date().getTimezoneOffset()
+navigator.geolocation.getCurrentPosition(console.log, console.error)
+```
+
+Also check DevTools → Network → request headers and confirm `Accept-Language` matches the spoofed locale.
+
+Useful public checks:
+
+- https://browserleaks.com/geo
+- https://browserleaks.com/javascript
+- https://browserleaks.com/headers
 
 ## Settings
 
-- **Enable / disable** — master toggle. When disabled, calls fall through to your
-  real `navigator.geolocation`.
-- **Reported accuracy (m)** — the `coords.accuracy` reported to pages. GPS-like
-  by default (30 m).
-- **Auto-refresh interval (minutes)** — how often to re-detect the exit IP.
-- **ipinfo.io token (optional)** — improves fallback reliability if you have a
-  (free) token. Not required.
+- **Location spoof** — enable/disable geolocation override.
+- **Timezone spoof** — enable/disable `Date` and `Intl.DateTimeFormat` timezone override.
+- **Language spoof** — enable/disable `navigator.language(s)`, Intl locale, and `Accept-Language` header override.
+- **Reported accuracy (m)** — reported GPS accuracy, default 30 m.
+- **Auto-refresh interval (minutes)** — how often GeoMirror re-detects the exit IP.
+- **ipinfo.io token (optional)** — improves fallback reliability if you have a token.
 
 ## Why each permission
 
 | Permission | Why |
 | --- | --- |
-| `storage` | Save your settings and the computed override locally. |
-| `alarms` | Schedule periodic refreshes. |
-| `<all_urls>` content script | Override `navigator.geolocation` on every site. This is unavoidable for a geolocation tool and the only page-level thing the extension does. |
-| `host_permissions` (8 API hosts) | Contact the IP/geolocation/Overpass/reverse-geocode services. Listed explicitly in the manifest. |
+| `storage` | Save settings and computed overrides locally. |
+| `alarms` | Schedule periodic exit-IP refresh. |
+| `declarativeNetRequest` | Set the outgoing `Accept-Language` header without reading page traffic. |
+| `<all_urls>` content script | Patch browser APIs on normal web pages before page scripts run. |
+| `host_permissions` | Call the explicitly listed IP/geolocation/Overpass/reverse-geocode providers. |
 
-See [PRIVACY.md](./PRIVACY.md) for the full data-flow breakdown.
+## If you do not want to install this extension
+
+You can ask your own coding agent to build a local version. Copy this prompt:
+
+```text
+Build a Chrome Manifest V3 extension that aligns browser-visible location signals with the current visible exit IP.
+
+Requirements:
+1. Detect the browser's visible exit IP location through Chrome's network stack using multiple fallback IP geolocation providers.
+2. Preserve provider fields for country code, city/region/country, latitude/longitude, ISP, and IANA timezone.
+3. Pick a nearby residential-looking coordinate instead of the raw IP centroid. Use OpenStreetMap Overpass highway=residential results when available, and a safe jitter fallback otherwise.
+4. Infer a plausible locale bundle from country code + timezone: navigator.language, navigator.languages, and Accept-Language.
+5. Store settings and computed overrides only in chrome.storage.local. Do not add telemetry, analytics, accounts, remote config, or page-content collection.
+6. Use two content scripts:
+   - an isolated-world bridge that can read chrome.storage and publish a JSON payload to the DOM;
+   - a MAIN-world injector at document_start that patches page-visible APIs.
+7. Patch:
+   - navigator.geolocation.getCurrentPosition / watchPosition / clearWatch
+   - navigator.permissions.query for geolocation
+   - Date.prototype.getTimezoneOffset with DST-aware IANA timezone logic using the receiver Date instance
+   - Intl.DateTimeFormat default timezone and resolvedOptions().timeZone
+   - navigator.language and navigator.languages
+   - Intl.DateTimeFormat / Intl.NumberFormat / Intl.Collator default locale
+8. Use chrome.declarativeNetRequest to set the outgoing Accept-Language header when language spoofing is enabled.
+9. Add a popup with toggles for location, timezone, language, accuracy, refresh interval, optional ipinfo token, and manual refresh.
+10. Add tests for timezone DST offsets, locale inference, provider parsing, and manifest injection order.
+11. Document the privacy model clearly: no telemetry, no page-content reading, local storage only, and explicit provider requests only for exit-IP/location matching.
+```
 
 ## Limitations
 
-- Cannot inject into `chrome://`, the Chrome Web Store, or other privileged
-  pages (Chrome restriction). Those pages generally don't use geolocation anyway.
-- IP geolocation is approximate (city-level). The override is a real street
-  within ~a few km of the exit IP's reported center — close enough to match at
-  city granularity, which is what consistency checks compare.
-- If every IP provider is rate-limited or blocked by your proxy node, refresh
-  will report an error and the last good override is kept. Try again shortly.
-- This improves **consistency** between IP and geolocation. It is not, and cannot
-  be, a complete anti-fingerprinting solution on its own.
+- GeoMirror improves consistency. It is not a complete anti-fingerprinting system.
+- IP geolocation is approximate.
+- Locale inference is heuristic because IP providers do not know the real user language.
+- Chrome extensions cannot inject into `chrome://`, the Chrome Web Store, or other privileged pages.
+- Some platforms may use additional risk signals outside browser JavaScript and headers.
 
 ## Development
 
@@ -116,33 +191,43 @@ Project layout:
 
 ```
 geomirror/
-├── manifest.json        # MV3 manifest
-├── background.js        # service worker: detect → pick → store
+├── manifest.json
+├── background.js
+├── content-bridge.js
+├── content-inject.js
+├── docs/
+│   └── TECHNICAL.md
 ├── lib/
-│   ├── geo.js           # math + Overpass residential selection
-│   └── providers.js     # IP + reverse-geocode provider chain
-├── content-inject.js    # MAIN-world: overrides navigator.geolocation
-├── content-bridge.js    # ISOLATED-world: passes coords from storage to page
-├── popup.{html,css,js}  # UI
-├── tools/gen-icons.py   # regenerate icons
-└── icons/               # 16/48/128 PNGs
+│   ├── geo.js
+│   ├── locale.js
+│   ├── providers.js
+│   └── timezone.js
+├── popup.html
+├── popup.css
+├── popup.js
+├── test/
+│   └── run-tests.js
+└── icons/
 ```
 
-Quick checks:
+Checks:
 
 ```bash
-python3 tools/gen-icons.py          # regenerate icons
-node --check background.js          # syntax-check any JS file
-node -e "const g=require('./lib/geo.js'); console.log(g.jitterCoord(34.05,-118.24,400,1800))"
+node test/run-tests.js
+node --check background.js
+node --check content-inject.js
+node --check content-bridge.js
+node --check lib/providers.js
+node --check lib/locale.js
+node --check lib/timezone.js
+node --check popup.js
 ```
 
-After changing any file, reload the extension on `chrome://extensions` (the
-circular-arrow icon) to apply it.
+After changing files, reload the extension in `chrome://extensions`.
 
 ## Contributing
 
-Pull requests welcome. Please keep the permission surface minimal and the
-"no telemetry, no page content reading" guarantees in `PRIVACY.md` intact.
+Pull requests welcome. Keep the permission surface minimal and preserve the no-telemetry, no-page-content-reading guarantees.
 
 ## License
 
