@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Node / tooling
+node_modules/
+*.log
+
+# Build artifacts (icons are generated, but committed for store convenience)
+# Uncomment to ignore generated icons:
+# icons/*.png
+
+# Editor
+.vscode/
+.idea/
+*.swp

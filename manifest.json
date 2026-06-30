@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "GeoMirror",
+  "version": "1.0.0",
+  "description": "Mirror your visible IP's geolocation into the browser's HTML5 location API. Automatically picks a nearby residential street so navigator.geolocation always matches your exit IP.",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://reallyfreegeoip.org/*",
+    "https://ipwho.is/*",
+    "https://ipapi.co/*",
+    "https://ipinfo.io/*",
+    "https://overpass-api.de/*",
+    "https://overpass.kumi.systems/*",
+    "https://maps.mail.ru/osm/tools/overpass/*",
+    "https://api.bigdatacloud.net/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-inject.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-bridge.js"],
+      "world": "ISOLATED",
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "GeoMirror",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "homepage_url": "https://github.com/Azurboy/geomirror"
+}

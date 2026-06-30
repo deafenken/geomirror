@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GeoMirror</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="icons/icon48.png" alt="" class="logo" />
+      <div>
+        <h1>GeoMirror</h1>
+        <p class="tag">Make the browser's location match your IP</p>
+      </div>
+    </div>
+    <label class="switch" title="Enable / disable the override">
+      <input type="checkbox" id="enabled" />
+      <span></span>
+    </label>
+  </header>
+
+  <section class="status" id="status">
+    <span class="dot" id="dot"></span>
+    <span id="statusText">Loading…</span>
+  </section>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Visible IP</h2>
+      <p class="big" id="ip">—</p>
+      <p class="sub" id="ipLoc">—</p>
+      <p class="muted" id="isp"></p>
+    </div>
+    <div class="card">
+      <h2>Reported location</h2>
+      <p class="big" id="addr">—</p>
+      <p class="sub" id="coords">—</p>
+      <p class="muted" id="source"></p>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="refresh" class="primary">Refresh now</button>
+    <span class="muted" id="updated"></span>
+  </div>
+
+  <details class="advanced">
+    <summary>Advanced</summary>
+    <label>Reported accuracy (m)
+      <input type="number" id="accuracyM" min="5" max="500" step="5" />
+    </label>
+    <label>Auto-refresh interval (minutes)
+      <input type="number" id="refreshMinutes" min="30" max="10080" step="30" />
+    </label>
+    <label>ipinfo.io token (optional, improves fallback)
+      <input type="text" id="ipToken" placeholder="leave empty if unsure" />
+    </label>
+  </details>
+
+  <footer>
+    <a href="https://github.com/Azurboy/geomirror" id="repoLink" target="_blank" rel="noopener">Source &amp; privacy</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
